@@ -47,7 +47,7 @@ tidy:
 .PHONY: mocks
 mocks:
 	$(MOCKGEN) -source=internal/remote_config/repository/repository.go -destination=internal/remote_config/repository/mocks/repository_mock.go -package=mocks
-	$(MOCKGEN) -source=internal/remote_config/service/service.go -destination=internal/remote_config/repository/mocks/service_mock.go -package=mocks
+	$(MOCKGEN) -source=internal/remote_config/service/service.go -destination=internal/remote_config/service/mocks/service_mock.go -package=mocks
 
 # Utilities
 .PHONY: run

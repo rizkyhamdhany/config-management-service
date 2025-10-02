@@ -115,6 +115,13 @@ docker compose build
 docker compose up -d
 ```
 
+or 
+
+```bash
+make build
+make up
+```
+
 2) **Health check:**
 ```bash
 curl -i http://localhost:8080/healthz
@@ -260,7 +267,7 @@ curl -i -X PUT "$API/api/configs/payment-qris-toggle"   -H "x-api-key: $KEY"   -
 
 **5) Rollback**
 ```bash
-curl -i -X POST "$API/api/configs/payment-qris-toggle/rollback"   -H "x-api-key: $KEY"   -H "Content-Type: application/json"   -d '{ "to_version": 1 }'
+curl -i -X POST "$API/api/configs/payment-qris-toggle/rollback"   -H "x-api-key: $KEY"   -H "Content-Type: application/json"   -d '{ "version": 1 }'
 ```
 
 ---

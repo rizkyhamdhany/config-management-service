@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"configuration-management-service/internal/remote_config/model"
-	srvMock "configuration-management-service/internal/remote_config/repository/mocks"
 	"configuration-management-service/internal/remote_config/service"
+	srvMock "configuration-management-service/internal/remote_config/service/mocks"
 
 	"github.com/golang/mock/gomock"
 	"github.com/labstack/echo/v4"
