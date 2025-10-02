@@ -1,0 +1,599 @@
+openapi: 3.0.3
+info:
+  title: Configuration Management Service
+  version: 1.0.0
+  description: |
+    A simple configuration management API with schema validation, versioning, and rollback.
+
+servers:
+  - url: http://localhost:8080/api
+    description: Local dev
+
+tags:
+  - name: health
+    description: Liveness/health checks
+  - name: configs
+    description: Manage schema-validated configuration data with versions
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Health check
+      description: Returns 200 OK if the service is healthy. Includes optional DB connectivity status.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service, version, uptime_s]
+                properties:
+                  status: { type: integer, format: int32, example: 200 }
+                  service: { type: string, example: configuration-management-service }
+                  version: { type: string, example: 1.2.3 }
+                  uptime_s: { type: number, format: float, example: 1234.56 }
+                  db:
+                    type: object
+                    description: Present when a DB is configured.
+                    properties:
+                      ok: { type: boolean, example: true }
+        '503':
+          description: Service Unavailable when DB check fails
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service, version, uptime_s, db]
+                properties:
+                  status: { type: integer, format: int32, example: 503 }
+                  service: { type: string }
+                  version: { type: string }
+                  uptime_s: { type: number, format: float }
+                  db:
+                    type: object
+                    properties:
+                      ok: { type: boolean, example: false }
+                      error: { type: string, example: 'connect: connection refused' }
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /configs:
+    post:
+      tags: [configs]
+      summary: Create a configuration (version = 1)
+      parameters:
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema: { type: string }
+          description: Static service-to-service key
+        - name: Content-Type
+          in: header
+          required: true
+          schema: { type: string, enum: [application/json] }
+      description: |
+        Creates a new configuration with version `1`.  
+        The request body must include a unique `name`, a `type`, and a `data` object.
+        The `data` object is validated against the schema defined by the given `type` (see rules below).
+        
+        **Schema validation rules (per type, strict — `additionalProperties: false` unless noted):**
+        - **feature_toggle**
+          - required: `enabled` *(boolean)*
+          - `rollout_percentage`: integer 0–100
+          - `tags`: array<string>, unique items
+          - Example:
+            ```json
+            { "enabled": true, "rollout_percentage": 50, "tags": ["beta"] }
+            ```
+        
+        - **experiment_config**
+          - required: `experiment_key` *(string ≥1)*, `active` *(boolean)*, `variants` *(array, minItems=2)*
+          - each `variant`: `{ "name": "string ≥1", "weight": "number ≥0" }`
+          - `audience` (optional):
+            - `countries`: array<string>, unique items
+            - `os`: array<string in {ios, android, web}>, unique items
+            - `min_app_version`: string
+          - Example:
+            ```json
+            {
+              "experiment_key": "checkout_v2",
+              "active": true,
+              "variants": [
+                { "name": "control", "weight": 0.5 },
+                { "name": "variantA", "weight": 0.5 }
+              ]
+            }
+            ```
+        
+        - **service_client**
+          - required: `name` *(string ≥1)*, `base_url` *(uri)*, `timeout_ms` *(integer ≥100)*
+          - `retry` (optional): `{ "max_retries": int 0–10, "backoff_ms": int ≥0, "jitter": bool }`
+          - `headers`: object<string,string>
+          - Example:
+            ```json
+            { "name": "user-service", "base_url": "https://api.example.com", "timeout_ms": 2000 }
+            ```
+        
+        - **rate_limit_policy**
+          - required: `identifier_type` ∈ {ip, user, api_key}, `window_seconds` ≥1, `max_requests` ≥1
+          - `burst`: int ≥0
+          - `scope`: array<string ≥1>, unique items
+          - Example:
+            ```json
+            { "identifier_type": "ip", "window_seconds": 60, "max_requests": 10 }
+            ```
+        
+        - **notification_policy**
+          - required: `channel` ∈ {email, sms, push}, `enabled` *(boolean)*
+          - `daily_limit`: int ≥0
+          - `placeholders`: array<string ≥1>, unique items
+          - Example:
+            ```json
+            { "channel": "email", "enabled": true, "daily_limit": 500 }
+            ```
+        
+        - **schedule_rule**
+          - required: `active` *(boolean)*, `timezone` *(string ≥1)*
+          - `cron`: string ≥1
+          - `windows`: array of `{ "start": "date-time", "end": "date-time" }`
+          - Example:
+            ```json
+            {
+              "active": true,
+              "timezone": "Asia/Jakarta",
+              "cron": "0 2 * * *"
+            }
+            ```
+        
+        - **threshold_policy**
+          - required: `metric` *(string ≥1)*, `unit` ∈ {count, ms, percent, amount}, `enabled` *(boolean)*
+          - `min`/`max`: number or null
+          - `inclusive`: boolean (default true)
+          - Example:
+            ```json
+            { "metric": "attempts", "unit": "count", "max": 1000, "enabled": true }
+            ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteConfigCreateRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RemoteConfig' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /configs/{name}:
+    put:
+      tags: [configs]
+      summary: Update configuration (append new version)
+      parameters:
+        - $ref: '#/components/parameters/ConfigName'
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema: { type: string }
+          description: Static service-to-service key
+        - name: Content-Type
+          in: header
+          required: true
+          schema: { type: string, enum: [application/json] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RemoteConfigUpdateRequest' }
+      responses:
+        '200':
+          description: Updated (new version created)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RemoteConfig' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    get:
+      tags: [configs]
+      summary: Get configuration (latest or specific version)
+      parameters:
+        - $ref: '#/components/parameters/ConfigName'
+        - $ref: '#/components/parameters/VersionQuery'
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema: { type: string }
+          description: Static service-to-service key
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string }
+          description: Provide a previously received weak ETag to enable 304 Not Modified
+      responses:
+        '200':
+          description: OK
+          headers:
+            ETag:
+              description: Weak ETag for the {name,version} tuple
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RemoteConfig' }
+        '304': { description: Not Modified (ETag matched) }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /configs/{name}/versions:
+    get:
+      tags: [configs]
+      summary: List versions of a configuration
+      parameters:
+        - $ref: '#/components/parameters/ConfigName'
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema: { type: string }
+          description: Static service-to-service key
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items: { $ref: '#/components/schemas/RemoteConfig' }
+                required: [versions]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /configs/{name}/rollback:
+    post:
+      tags: [configs]
+      summary: Roll back to a previous version (creates a new version)
+      parameters:
+        - $ref: '#/components/parameters/ConfigName'
+        - name: X-Api-Key
+          in: header
+          required: true
+          schema: { type: string }
+          description: Static service-to-service key
+        - name: Content-Type
+          in: header
+          required: true
+          schema: { type: string, enum: [application/json] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RemoteConfigRollbackRequest' }
+      responses:
+        '200':
+          description: Rolled back (new version created)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RemoteConfig' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  parameters:
+    ConfigName:
+      name: name
+      in: path
+      required: true
+      description: Logical identifier of the configuration
+      schema: { type: string, minLength: 1 }
+    VersionQuery:
+      name: version
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1 }
+
+  schemas:
+    RemoteConfig:
+      type: object
+      properties:
+        name: { type: string }
+        type: { $ref: '#/components/schemas/RemoteConfigType' }
+        version: { type: integer, minimum: 1 }
+        data: { $ref: '#/components/schemas/RemoteConfigData' }
+        created_at: { type: string, format: date-time }
+      required: [name, type, version, data, created_at]
+      additionalProperties: false
+
+    RemoteConfigType:
+      type: string
+      enum:
+        - feature_toggle
+        - experiment_config
+        - service_client
+        - rate_limit_policy
+        - notification_policy
+        - schedule_rule
+        - threshold_policy
+
+    RemoteConfigCreateRequest:
+      type: object
+      required: [name, type, data]
+      properties:
+        name: { type: string }
+        type: { $ref: '#/components/schemas/RemoteConfigType' }
+        data: { $ref: '#/components/schemas/RemoteConfigData' }
+      additionalProperties: false
+
+    RemoteConfigUpdateRequest:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/RemoteConfigData' }
+      additionalProperties: false
+
+    RemoteConfigRollbackRequest:
+      type: object
+      required: [version]
+      properties:
+        version: { type: integer, minimum: 1 }
+      additionalProperties: false
+
+    RemoteConfigData:
+      oneOf:
+        - $ref: '#/components/schemas/FeatureToggleData'
+        - $ref: '#/components/schemas/ExperimentConfigData'
+        - $ref: '#/components/schemas/ServiceClientData'
+        - $ref: '#/components/schemas/RateLimitPolicyData'
+        - $ref: '#/components/schemas/NotificationPolicyData'
+        - $ref: '#/components/schemas/ScheduleRuleData'
+        - $ref: '#/components/schemas/ThresholdPolicyData'
+
+    FeatureToggleData:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+        rollout_percentage: { type: integer, minimum: 0, maximum: 100 }
+        tags:
+          type: array
+          items: { type: string }
+          uniqueItems: true
+        description: { type: string }
+      additionalProperties: false
+
+    ExperimentConfigData:
+      type: object
+      required: [experiment_key, active, variants]
+      properties:
+        experiment_key: { type: string, minLength: 1 }
+        active: { type: boolean }
+        variants:
+          type: array
+          minItems: 2
+          items:
+            type: object
+            required: [name, weight]
+            properties:
+              name: { type: string, minLength: 1 }
+              weight: { type: number, minimum: 0 }
+            additionalProperties: false
+        audience:
+          type: object
+          properties:
+            countries:
+              type: array
+              items: { type: string }
+              uniqueItems: true
+            os:
+              type: array
+              items: { type: string, enum: [ios, android, web] }
+              uniqueItems: true
+            min_app_version: { type: string }
+          additionalProperties: false
+        description: { type: string }
+      additionalProperties: false
+
+    ServiceClientData:
+      type: object
+      required: [name, base_url, timeout_ms]
+      properties:
+        name: { type: string, minLength: 1 }
+        base_url: { type: string, format: uri }
+        timeout_ms: { type: integer, minimum: 100 }
+        retry:
+          type: object
+          properties:
+            max_retries: { type: integer, minimum: 0, maximum: 10 }
+            backoff_ms: { type: integer, minimum: 0 }
+            jitter: { type: boolean }
+          additionalProperties: false
+        headers:
+          type: object
+          additionalProperties: { type: string }
+        description: { type: string }
+      additionalProperties: false
+
+    RateLimitPolicyData:
+      type: object
+      required: [identifier_type, window_seconds, max_requests]
+      properties:
+        identifier_type: { type: string, enum: [ip, user, api_key] }
+        window_seconds: { type: integer, minimum: 1 }
+        max_requests: { type: integer, minimum: 1 }
+        burst: { type: integer, minimum: 0 }
+        scope:
+          type: array
+          items: { type: string, minLength: 1 }
+          uniqueItems: true
+        description: { type: string }
+      additionalProperties: false
+
+    NotificationPolicyData:
+      type: object
+      required: [channel, enabled]
+      properties:
+        channel: { type: string, enum: [email, sms, push] }
+        enabled: { type: boolean }
+        daily_limit: { type: integer, minimum: 0 }
+        placeholders:
+          type: array
+          items: { type: string, minLength: 1 }
+          uniqueItems: true
+        description: { type: string }
+      additionalProperties: false
+
+    ScheduleRuleData:
+      type: object
+      required: [active, timezone]
+      properties:
+        active: { type: boolean }
+        timezone: { type: string, minLength: 1 }
+        cron: { type: string }
+        windows:
+          type: array
+          items:
+            type: object
+            required: [start, end]
+            properties:
+              start: { type: string, format: date-time }
+              end: { type: string, format: date-time }
+            additionalProperties: false
+        description: { type: string }
+      additionalProperties: false
+
+    ThresholdPolicyData:
+      type: object
+      required: [metric, unit, enabled]
+      properties:
+        metric: { type: string, minLength: 1 }
+        unit: { type: string, enum: [count, ms, percent, amount] }
+        min:
+          type: number
+          nullable: true
+        max:
+          type: number
+          nullable: true
+        inclusive:
+          type: boolean
+          description: Defaults to true at runtime if omitted
+        enabled: { type: boolean }
+        description: { type: string }
+      additionalProperties: false
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: BAD_REQUEST
+            message:
+              type: string
+              description: Human-readable error message
+              example: "invalid json: unexpected end of JSON input"
+            details:
+              description: Optional details
+              oneOf:
+                - { type: string }
+                - { type: object, additionalProperties: true }
+          required: [code, message]
+          additionalProperties: false
+      required: [error]
+      additionalProperties: false
+
+  responses:
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          examples:
+            malformed_json:
+              summary: malformed JSON body
+              value:
+                error:
+                  code: BAD_REQUEST
+                  message: "invalid json: unexpected end of JSON input"
+            schema_required_field:
+              summary: schema validation required field
+              value:
+                error:
+                  code: VALIDATION_ERROR
+                  message: "enabled: enabled is required"
+            invalid_type_enum:
+              summary: invalid type enum
+              value:
+                error:
+                  code: VALIDATION_ERROR
+                  message: "type: value must be one of [feature_toggle experiment_config service_client rate_limit_policy notification_policy schedule_rule threshold_policy]"
+    Unauthorized:
+      description: Unauthorized (invalid or missing X-Api-Key)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: missing or invalid X-Api-Key
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: NOT_FOUND
+              message: config not found
+    Conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: CONFLICT
+              message: already exists
+    UnsupportedMediaType:
+      description: Unsupported Media Type
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: UNSUPPORTED_MEDIA_TYPE
+              message: only application/json is supported
+    InternalError:
+      description: Internal Server Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: INTERNAL
+              message: internal server error
