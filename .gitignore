@@ -12,12 +12,6 @@
 # Coverage
 coverage.out
 
-# SQLite databases
-*.db
-*.db-journal
-*.sqlite
-*.sqlite3
-
 # Logs
 *.log
 
