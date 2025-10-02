@@ -1,0 +1,16 @@
+services:
+  api:
+    image: configuration-management-service:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      SERVICE_NAME: "configuration-management-service"
+      SERVICE_VERSION: "0.1.0"
+      DATABASE_URL: "file:/srv/data/configs.db?_pragma=busy_timeout=5000&_pragma=journal_mode=WAL"
+      S2S_STATIC_KEY: "super-secret-123"
+    volumes:
+      - ./data:/srv/data
+    restart: unless-stopped

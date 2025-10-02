@@ -1,0 +1,46 @@
+# Binaries
+/api
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build outputs
+*.test
+*.out
+
+# Coverage
+coverage.out
+
+# SQLite databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Local data dir
+/data/
+
+# Logs
+*.log
+
+# Vendor (if using vendoring)
+vendor/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# MacOS
+.DS_Store
+__MACOSX/
+
+# Git
+.git/
+
+# Docker
+*.pid
+*.seed
